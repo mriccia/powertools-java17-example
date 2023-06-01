@@ -1,0 +1,21 @@
+plugins {
+    id 'java'
+    id 'io.freefair.aspectj.post-compile-weaving' version '8.0.1'
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'com.amazonaws:aws-lambda-java-core:1.2.1'
+    implementation 'com.amazonaws:aws-lambda-java-events:3.11.0'
+    testImplementation 'junit:junit:4.13.2'
+    aspect 'software.amazon.lambda:powertools-logging:1.15.0'
+    aspect 'software.amazon.lambda:powertools-tracing:1.15.0'
+    aspect 'software.amazon.lambda:powertools-metrics:1.15.0'
+    implementation "org.aspectj:aspectjrt:1.9.8.RC3"
+}
+
+sourceCompatibility = 17
+targetCompatibility = 17
