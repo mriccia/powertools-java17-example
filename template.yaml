@@ -8,26 +8,152 @@ Description: >
 # More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
 Globals:
   Function:
+    Runtime: java17
     Timeout: 20
     MemorySize: 512
+    Tracing: Active
+    Environment:
+      Variables:
+        # Powertools env vars: https://awslabs.github.io/aws-lambda-powertools-python/#environment-variables
+        POWERTOOLS_LOG_LEVEL: DEBUG
+        POWERTOOLS_LOGGER_SAMPLE_RATE: 0.7
+        POWERTOOLS_LOGGER_LOG_EVENT: true
+        POWERTOOLS_METRICS_NAMESPACE: java17-sample
 
 Resources:
+  DemoSNSTopic:
+    Type: AWS::SNS::Topic
+
+  SNStoSQSSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref DemoSNSTopic
+      Protocol: 'sqs'
+      Endpoint: !GetAtt DemoSqsQueue.Arn
+      RawMessageDelivery: true
+
+  SnsToSqsPolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: "Allow SNS publish to SQS"
+            Effect: Allow
+            Principal:
+              Service: "sns.amazonaws.com"
+            Resource: !GetAtt DemoSqsQueue.Arn
+            Action:
+              - sqs:SendMessageBatch
+              - sqs:SendMessage
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Ref DemoSNSTopic
+      Queues:
+        - !Ref DemoSqsQueue
+
+  DemoDlqSqsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 300
+
+  DemoSqsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 300
+      RedrivePolicy:
+        deadLetterTargetArn:
+          Fn::GetAtt:
+            - "DemoDlqSqsQueue"
+            - "Arn"
+        maxReceiveCount: 2
+
+  DemoS3bucket:
+    Type: AWS::S3::Bucket
+
+  DemoSNSSenderFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: HelloWorldFunction
+      Handler: helloworld.SnsMessageSender::handleRequest
+      Environment:
+        Variables:
+          POWERTOOLS_SERVICE_NAME: sns-demo
+          BUCKET_NAME: !Ref DemoS3bucket
+          TOPIC_ARN: !Ref DemoSNSTopic
+          QUEUE_URL: !Ref DemoSqsQueue
+      Policies:
+        - Statement:
+            - Sid: S3put
+              Effect: Allow
+              Action:
+                - s3:PutObject
+                - s3:PutObjectAcl
+              Resource:
+                - !Sub "arn:${AWS::Partition}:s3:::${DemoS3bucket}"
+                - !Sub "arn:${AWS::Partition}:s3:::${DemoS3bucket}/*"
+            - Sid: SNSPublish
+              Effect: Allow
+              Action:
+                - sns:Publish
+              Resource: !Ref DemoSNSTopic
+      Events:
+        CWSchedule:
+          Type: Schedule
+          Properties:
+            Schedule: 'rate(1 minute)'
+            Name: !Join ["-", ["message-producer-schedule", !Select [0, !Split [-, !Select [2, !Split [/, !Ref AWS::StackId ]]]]]]
+            Description: Produce message to SQS via a Lambda function
+            Enabled: true
+
+  DemoSQSConsumerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: HelloWorldFunction
+      Handler: helloworld.SqsFunctionPoller::handleRequest
+      Environment:
+        Variables:
+          POWERTOOLS_SERVICE_NAME: sns-demo
+      Policies:
+        - Statement:
+            - Sid: SQSDeleteGetAttribute
+              Effect: Allow
+              Action:
+                - sqs:DeleteMessageBatch
+                - sqs:GetQueueAttributes
+              Resource: !GetAtt DemoSqsQueue.Arn
+            - Sid: SQSSendMessageBatch
+              Effect: Allow
+              Action:
+                - sqs:SendMessageBatch
+                - sqs:SendMessage
+              Resource: !GetAtt DemoDlqSqsQueue.Arn
+            - Sid: S3get
+              Effect: Allow
+              Action:
+                - s3:GetObject
+              Resource:
+                - !Sub "arn:${AWS::Partition}:s3:::${DemoS3bucket}"
+                - !Sub "arn:${AWS::Partition}:s3:::${DemoS3bucket}/*"
+      Events:
+        MySQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt DemoSqsQueue.Arn
+            BatchSize: 2
+            MaximumBatchingWindowInSeconds: 300
+
   HelloWorldFunction:
     Type: AWS::Serverless::Function # More info about Function Resource: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
     Properties:
       CodeUri: HelloWorldFunction
       Handler: helloworld.App::handleRequest
-      Runtime: java17
       Architectures:
         - x86_64
       MemorySize: 512
-      Tracing: Active
       Environment: # More info about Env Vars: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#environment-object
         Variables:
-          POWERTOOLS_LOGGER_SAMPLE_RATE: 0.7
-          POWERTOOLS_LOG_LEVEL: DEBUG
           POWERTOOLS_SERVICE_NAME: example
-          POWERTOOLS_METRICS_NAMESPACE: java17-sample
           PARAM1: VALUE
       Events:
         HelloWorld:
